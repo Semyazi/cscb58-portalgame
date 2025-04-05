@@ -11,7 +11,7 @@
 # - Display height in pixels: 512
 # - Base Address for Display: 0x10008000 ($gp)
 #
-# Which milestoneshave been reached in this submission?
+# Which milestones have been reached in this submission?
 # - Milestone 4
 #
 # Which approved features have been implemented for milestone 4?
