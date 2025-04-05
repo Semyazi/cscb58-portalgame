@@ -1,0 +1,2154 @@
+#####################################################################
+#
+# CSCB58 Winter 2025 Assembly Final Project
+# University of Toronto, Scarborough
+#
+# Student: Evan Simanovskis, 1010115439, simanov3, evan.simanovskis@mail.utoronto.ca
+# # Bitmap Display Configuration:
+# - Unit width in pixels: 8
+# - Unit height in pixels: 8
+# - Display width in pixels: 512
+# - Display height in pixels: 512
+# - Base Address for Display: 0x10008000 ($gp)
+#
+# Which milestoneshave been reached in this submission?
+# - Milestone 4
+#
+# Which approved features have been implemented for milestone 4?
+# 1. Disappearing platforms (+1)
+# 2. Different levels (+2)
+# 3. Start menu (+1)
+# 4. Portal gun (+2)
+# # Link to video demonstration for final submission:
+# - (insert YouTube / MyMedia / other URL here). Make sure we can view it!
+# # Are you OK with us sharing the video with people outside course staff? yes, and please share this project github link as well!
+# # Any additional information that the TA needs to know
+# - I used MARS macros extensively instead of functions since I found them to be more efficient
+#
+#####################################################################
+
+.eqv BASE_ADDRESS	0x10008000
+
+### MACROS
+.macro push (%x)
+	sub $sp,$sp,4
+	sw %x, 0($sp)
+.end_macro
+
+.macro pop (%x)
+	lw %x,0($sp)
+	add $sp,$sp,4
+.end_macro
+
+.macro quit
+	li $v0,10
+	syscall
+.end_macro
+
+.macro inc %reg
+	add %reg, %reg, 1
+.end_macro
+
+.macro dec %reg
+	sub %reg, %reg, 1
+.end_macro
+
+.macro toRowM(%row, %col, %to)
+	sll %to, %row, 6
+	add %to, %to, %col
+.end_macro
+
+.macro fromRowM(%rm, %row, %col)
+	andi %col, %rm, 64
+	sra %row, %row, 6
+.end_macro
+
+.macro pixelRm (%rm, %colour)
+	add $a1,$zero,%colour
+	
+	add $a0,$zero,%rm
+	sll $a0,$a0,2
+	sw $a1,BASE_ADDRESS($a0)
+.end_macro
+
+.macro pixel (%row, %col, %colour)	
+	add $a1,$zero,%colour
+	
+	toRowM %row, %col, $a0
+	sll $a0,$a0,2
+	sw $a1,BASE_ADDRESS($a0)
+.end_macro
+
+.macro getPixel(%row, %col, %colour)
+	toRowM %row, %col, $a0
+	sll $a0,$a0,2
+	lw %colour,BASE_ADDRESS($a0)
+.end_macro
+
+.macro objRm(%rm,%val)
+	push $t0
+	push $t1
+	
+	add $t0,$zero,%rm
+	add $t1,$zero,%val
+	sb $t1,objbuf($t0)
+
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro getObjRm(%rm,%dest)
+	push $s0
+	push $s1
+	
+	add $s0,$zero,%rm
+	lb %dest,objbuf($s0)
+
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro obj(%row,%col,%val)
+	push $t0
+	push $t1
+	
+	toRowM %row,%col,$t0
+	add $t1,$zero,%val
+	sb $t1,objbuf($t0)
+
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro getObj(%row,%col,%dest)
+	push $t0
+	
+	toRowM %row,%col,$t0
+	lb %dest,objbuf($t0)
+		
+	pop $t0
+.end_macro
+
+.macro setObjLoc(%obj,%loc)
+	push $s6
+	
+	add $s6,$zero,%obj
+	mul $s6,$s6,4
+	sw %loc,objloc($s6)
+	
+	pop $s6
+.end_macro
+
+.macro getObjLoc(%obj,%loc)
+	push $s6
+	
+	add $s6,$zero,%obj
+	mul $s6,$s6,4
+	lw %loc,objloc($s6)
+	
+	pop $s6
+.end_macro
+
+
+.macro displayImage %label
+	push $t0
+	push $t1
+	push $t2
+	
+	li $t0,0
+	
+loop:	# loop logic
+	# load the char
+	lbu $t1,%label($t0)
+	sub $t1,$t1,48 # offset '0'
+	sll $t1,$t1,2
+	
+	# find the colour
+	lw $t2,COLOURS($t1)
+	
+	pixelRm($t0,$t2)
+
+	inc $t0
+	ble $t0, 4095, loop
+
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+# move it five rows down for the failure screen
+.macro displayImageOffset %label
+	push $t0
+	push $t1
+	push $t2
+	
+	li $t0,0
+	
+loop:	# loop logic
+	# load the char
+	lbu $t1,%label($t0)
+	sub $t1,$t1,48 # offset '0'
+	sll $t1,$t1,2
+	
+	# find the colour
+	lw $t2,COLOURS($t1)
+	
+	add $t0,$t0,320
+	pixelRm($t0,$t2)
+	sub $t0,$t0,320
+
+	inc $t0
+	ble $t0, 3775, loop
+
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro init_level
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	push $t5
+	push $t6
+	
+	# set this so we don't exit out of the level immediately
+	lw $t0,curlevel
+	li $t1,0
+	sb $t1,levels_beat($t0)
+	
+	# assign player_row/col/dir
+	li player_row 56
+	li player_col 2
+	
+	#li player_row 25
+	#li player_col 48
+	
+	li player_dir 1
+	
+	# portal data
+	li $t0,-1
+	set_portal_loc($t0,$t0,0)
+	set_portal_loc($t0,$t0,1)
+	set_portal_dir($t0,0)
+	set_portal_dir($t0,1)
+	
+	li $t0,0
+	sb $t0,player_boxes
+	
+	sw $t0,where_portal
+	sw $t0,where_portal_type
+	
+	# player button data
+	li $t0,0
+	sw $t0,player_button
+	sw $t0,button_pixels
+	
+	# get the offset, store it in $t3
+	lw $t3,curlevel
+	dec $t3
+	sll $t3,$t3,12
+	
+	# set the object state
+	li $t0,0
+	la $t1,objstate
+	sb $t0,($t1)
+	inc $t1
+	sb $t0,($t1)
+	inc $t1
+	sb $t0,($t1)
+	inc $t1
+	sb $t0,($t1)
+
+	# handle the object buffer
+	li $t0,0
+objloop:
+	# logic
+	objRm($t0,-2)
+	#
+	inc $t0
+	ble $t0,4095,objloop
+	
+	# parse the map	
+	li $t0,0
+loop:	# loop logic
+	# get the character
+	add $t5,$t3,$t0
+	
+	#lbu $t4,0($t5)
+	lbu $t4,LEVELS($t5)
+	
+	# display the character
+	beq $t4, 69, dispE
+	beq $t4, 87, dispW
+	beq $t4,'B',dispB
+	beq $t4,'N',dispN
+	beq $t4,'F',dispF
+	
+	# interpret the numbers
+	sub $t4,$t4,48
+	# set the object location
+	setObjLoc($t4,$t0) # obj, loc
+	
+	blt $t4,4,handleDoor
+	bge $t4,4,handleBtn
+	
+handleDoor:
+	objRm($t0,$t4)
+	add $t0,$t0,64
+	objRm($t0,$t4)
+	add $t0,$t0,64
+	objRm($t0,$t4)
+	add $t0,$t0,64
+	objRm($t0,$t4)
+	sub $t0,$t0,192
+
+	j finishNumerical
+handleBtn:
+	objRm($t0,$t4)
+	inc $t0
+	objRm($t0,$t4)
+	inc $t0
+	objRm($t0,$t4)
+	sub $t0,$t0,2
+	
+	j finishNumerical
+	
+finishNumerical:
+	b next
+	#
+
+dispE:	li $t6, BG_COL
+	b next
+dispW:	li $t6, WALL_COL
+	b next
+dispN:	li $t6,NP_WALL_COL
+	b next
+dispF:	li $t6,FINISH_COL
+	b next
+dispB:
+	objRm($t0,-1)
+	inc $t0
+	objRm($t0,-1)
+	inc $t0
+	objRm($t0,-1)
+	add $t0,$t0,64
+	objRm($t0,-1)
+	dec $t0
+	objRm($t0,-1)
+	dec $t0
+	objRm($t0,-1)
+	add $t0,$t0,64
+	objRm($t0,-1)
+	inc $t0
+	objRm($t0,-1)
+	inc $t0
+	objRm($t0,-1)
+	
+	sub $t0,$t0,130
+	
+	b next
+
+next:	pixelRm($t0,$t6)
+		
+cont:	inc $t0
+	ble $t0,4095,loop
+	
+	# loop done
+	# now, display the object buffer
+	li $t0,0
+	
+lastLoop:
+	# logic
+	getObjRm($t0,$t1)
+	beq $t1,-2,continue
+	beq $t1,-1,drawBox
+	blt $t1,4,drawDoor
+	bge $t1,4,drawBtn
+	j continue	
+
+drawBox:
+	pixelRm($t0,BOX_COL)
+	j continue
+
+drawDoor:
+	pixelRm($t0,DOOR_COL)
+	j continue	
+
+drawBtn:
+	pixelRm($t0,BTN_DE_COL)
+	j continue
+
+continue:
+	
+	
+	#
+	
+	inc $t0
+	ble $t0,4095,lastLoop
+	
+	# make banner
+	li $t0,64
+	sw $t0,cur_score
+	li $t0,0
+	sw $t0,partial_frames
+	
+	# loop
+	li $t0 0
+flstart:
+	# loop logic
+	pixelRm($t0,NP_WALL_COL)
+	add $t0,$t0,64
+	pixelRm($t0,SCORE_COL)
+	add $t0,$t0,64
+	pixelRm($t0,SCORE_COL)
+	add $t0,$t0,64
+	pixelRm($t0,SCORE_COL)
+	add $t0,$t0,64
+	pixelRm($t0,NP_WALL_COL)
+	sub $t0,$t0,256
+	
+	#
+	inc $t0
+	ble $t0,63,flstart
+	
+	
+	pop $t6
+	pop $t5
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+# Drawing
+.macro draw_player (%colour)
+	# see if there's a cube or the end in our midst
+	# do a loop to see if there's a cube or the finish line
+	li $t0,0
+outerloop:
+	# outer logic
+	li $t1,0
+innerloop:
+	# inner logic
+	# get the colour here
+	add player_row,player_row,$t0
+	add player_col,player_col,$t1
+	
+	getPixel(player_row,player_col,$t2)
+	
+	sub player_row,player_row,$t0
+	sub player_col,player_col,$t1
+	
+	# analyze the colour
+	beq $t2,BOX_COL,cube
+	beq $t2,FINISH_COL,finish
+	j cont
+	
+cube:
+	add $t0,$t0,player_row
+	add $t1,$t1,player_col
+
+	eat_box
+	
+	sub $t0,$t0,player_row
+	sub $t1,$t1,player_col
+	
+	j cont
+
+finish:
+	# we beat the level!
+	lw $t2,curlevel
+	li $t3,1
+	sb $t3,levels_beat($t2)
+	
+	j cont
+
+cont:
+	
+	#
+	inc $t1
+	ble $t1,2,innerloop
+	
+	#
+	inc $t0
+	ble $t0,3,outerloop
+	
+	
+	
+	# draw the player pixels
+	add $t0, $zero, 0
+fl1:
+	# inner loop
+	add $t1, $zero, 0
+fl2:	# draw a pixel
+	add $t2,$t0,player_row
+	add $t3,$t1,player_col
+	pixel($t2,$t3,%colour)
+
+
+	inc $t1
+	ble $t1, 2, fl2
+	
+	inc $t0
+	ble $t0, 3, fl1
+	
+	# are we done?
+	add $t0,$zero,%colour
+	beq $t0,BG_COL,finishMacro
+	
+	# draw where we are looking (our eye)
+	beq player_dir,0,lookLeft
+	beq player_dir,1,lookRight
+	beq player_dir,2,lookUp
+	break
+	
+lookLeft:
+	pixel(player_row,player_col,LOOK_COL)
+	
+	j finishEye
+lookRight:	
+	add player_col,player_col,2
+	pixel(player_row,player_col,LOOK_COL)
+	sub player_col,player_col,2
+
+	j finishEye
+	
+lookUp:
+	add player_col,player_col,1
+	pixel(player_row,player_col,LOOK_COL)
+	sub player_col,player_col,1
+	
+	j finishEye
+
+finishEye:	
+	
+	# draw our stomach (to see if we've eaten any boxes)
+	lb $t0,player_boxes
+	beqz $t0,finishMacro
+	
+	# draw!
+	inc player_row
+	inc player_col
+	pixel(player_row,player_col,BOX_CONSUME_COL)
+	inc player_row
+	pixel(player_row,player_col,BOX_CONSUME_COL)
+	
+	sub player_row,player_row,2
+	dec player_col
+	
+finishMacro:
+		
+.end_macro
+
+.macro eat_box
+	move $s0,$t0
+	move $s1,$t1
+	
+	# use
+	# $s0 = y
+	# $s1 = x
+	
+	# while loop
+while1:	bltz $s0,endwhile1
+
+	# get colour
+	getPixel($s0,$s1,$s2)
+	bne $s2,BOX_COL,endwhile1
+	dec $s0
+
+	j while1	
+endwhile1:
+
+	inc $s0
+	
+	# while loop
+while2:	bltz $s1,endwhile2
+
+	# get colour
+	getPixel($s0,$s1,$s2)
+	bne $s2,BOX_COL,endwhile2
+	dec $s1
+
+	j while2	
+endwhile2:
+	
+	inc $s1
+		
+	# erase the box!
+	toRowM($s0,$s1,$s2)
+	
+	pixelRm($s2,BG_COL)
+	inc $s2
+	pixelRm($s2,BG_COL)
+	inc $s2
+	pixelRm($s2,BG_COL)
+	add $s2,$s2,64
+	pixelRm($s2,BG_COL)
+	dec $s2
+	pixelRm($s2,BG_COL)
+	dec $s2
+	pixelRm($s2,BG_COL)
+	add $s2,$s2,64
+	pixelRm($s2,BG_COL)
+	inc $s2
+	pixelRm($s2,BG_COL)
+	inc $s2
+	pixelRm($s2,BG_COL)
+	
+	# add this box to the total count
+	lb $s3,player_boxes
+	inc $s3
+	sb $s3,player_boxes
+	
+	# increase the score by 10
+	li $s0,0
+flstart:
+	#
+	increase_score
+
+	#
+	inc $s0
+	blt $s0,9,flstart
+.end_macro
+
+# Player Collision
+.macro check_on_floor
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	
+	# default value
+	li $t0,0
+	
+	# FOR: check pixels below us
+	add $t1,$zero,0
+forLogic:
+	# load pixel value
+	add player_row, player_row, 4
+	add $t1,$t1,player_col
+	getPixel player_row, $t1, $t2
+	sub $t1,$t1,player_col
+	sub player_row, player_row 4
+	
+	beq $t2, BG_COL, cont
+	beq $t2, BOX_COL, cont
+	li $t0,1
+	
+cont:
+	inc $t1
+	ble $t1,2,forLogic	
+	
+	# set the final value
+	sw $t0,on_floor
+	
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro is_this_wall(%col, %reg)
+	li %reg, 1
+	beq %col,BG_COL,notwall
+	beq %col,BOX_COL,notwall
+	beq %col,FINISH_COL,notwall
+	j done
+
+notwall:
+	li %reg,0
+	j done
+done:
+
+	
+.end_macro
+
+.macro inb(%dest,%row,%col)
+	li %dest,1
+	blt %row,0,bad
+	blt %row,0,bad
+	
+	bge %row,64,bad
+	bge %col,64,bad
+	
+	j finish
+bad:	li %dest,0
+finish:	
+.end_macro
+
+.macro portal_shot_lr(%ptype)
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	push $t5
+	push $t6
+	
+	get_pcol $t6,%ptype
+	
+	# determine raycasting position and delta
+	move $t0,player_row
+	move $t1,player_col
+	li $t4,-1
+	dec $t1
+	
+	beq player_dir,0,startRaycast
+	move $t1,player_col
+	add $t1,$t1,3
+	li $t4,1
+	
+startRaycast:
+	li $t2,0 # good variable
+	
+	# make a while loop
+startLoop:	
+	# determine if we're good
+	inb $t3,player_row,player_col
+	beqz $t3,endLoop
+	
+	# internal loop logic
+	getPixel($t0,$t1,$t3) # get the colour
+	
+	beq $t3,WALL_COL,goodColour
+	beq $t3,$t6,goodColour
+	beq $t3,BOX_COL,finishIteration
+	beq $t3,BG_COL,finishIteration
+	
+goodColour:
+	li $t2,1
+	j endLoop
+
+badColour:
+	j endLoop
+
+finishIteration:
+	
+	# increase the thing
+	add $t1,$t1,$t4
+	
+	j startLoop
+endLoop:
+	# place the portal or exit
+	beqz $t2,endShot
+
+	
+	# determine if it's a good location
+	good_portal_loc($t0,$t1,$t6)
+	beqz $t2,endShot
+	
+	remove_old_portal %ptype
+	
+	# construct the new portal
+	li $t2,0
+Loop:
+	# loop logic
+	add $t3,$t0,$t2 # row
+	add $t4,$t1,$zero # col
+	
+	pixel $t3,$t4,$t6
+	
+	inc $t2
+	ble $t2,3,Loop
+	
+	# make the changes in memory
+	set_portal_loc $t0,$t1,%ptype
+	set_portal_dir player_dir,%ptype
+	
+	
+endShot:
+	pop $t6
+	pop $t5
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro portal_shot_up(%ptype)
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	push $t5
+	push $t6
+	
+	get_pcol $t6,%ptype
+	
+	# determine raycasting position and delta
+	move $t0,player_row
+	move $t1,player_col
+	dec $t0
+	inc $t1
+	
+startRaycast:
+	li $t2,0 # good variable
+	
+	# make a while loop
+startLoop:	
+	# determine if we're good
+	inb $t3,player_row,player_col
+	beqz $t3,endLoop
+	
+	# internal loop logic
+	getPixel($t0,$t1,$t3) # get the colour
+	
+	beq $t3,WALL_COL,goodColour
+	beq $t3,$t6,goodColour
+	beq $t3,BOX_COL,finishIteration
+	beq $t3,BG_COL,finishIteration
+	
+goodColour:
+	li $t2,1
+	j endLoop
+
+badColour:
+	j endLoop
+
+finishIteration:
+	
+	# decrease the thing
+	dec $t0
+	
+	j startLoop
+endLoop:
+	# place the portal or exit
+	beqz $t2,endShot
+
+	
+	# determine if it's a good location
+	good_portal_loc_ceiling($t0,$t1,$t6)
+	beqz $t2,endShot
+	
+	remove_old_portal %ptype
+	
+	# construct the new portal
+	li $t2,0
+Loop:
+	# loop logic
+	add $t3,$t0,$zero # row
+	add $t4,$t1,$t2 # col
+	
+	pixel $t3,$t4,$t6
+	
+	inc $t2
+	ble $t2,3,Loop
+	
+	# make the changes in memory
+	set_portal_loc $t0,$t1,%ptype
+	li $t0,2
+	set_portal_dir $t0,%ptype
+	
+	
+endShot:
+	pop $t6
+	pop $t5
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+.macro remove_old_portal(%ptype)
+	push $s0
+	push $s1
+	push $s2
+	push $s3
+	push $s4
+	
+	# get our location
+	get_portal_loc $s0,$s1,%ptype
+	beq $s0,-1,done
+	
+	# get the portal direction and take it into account
+	add $s3,$zero,%ptype
+	get_portal_dir $s2,$s3
+	beq $s2,2,portalUp
+	
+	
+portalLeftRight:
+	# loop
+	li $s2,0
+for1:	# for logic
+	add $s3,$s0,$s2 # row
+	add $s4,$s1,$zero # col
+	
+	# delete!
+	pixel $s3,$s4,WALL_COL
+
+	#
+	inc $s2
+	ble $s2,3,for1
+	
+	j done
+	
+
+portalUp:
+	# loop
+	li $s2,0
+for2:	# for logic
+	add $s3,$s0,$zero # row
+	add $s4,$s1,$s2 # col
+	
+	# delete!
+	pixel $s3,$s4,WALL_COL
+
+	#
+	inc $s2
+	ble $s2,3,for2
+	
+
+done:	
+	pop $s4
+	pop $s3
+	pop $s2
+	pop $s1
+	pop $s0
+
+	
+.end_macro
+
+.macro portal_shot(%type)
+	beq player_dir,0,lr
+	beq player_dir,1,lr
+	beq player_dir,2,up
+	break
+lr:
+	portal_shot_lr %type
+	j done
+up:
+	portal_shot_up %type
+done:
+.end_macro
+
+.macro good_portal_loc(%prow, %pcol, %pcolour)
+	push $s0
+	push $s1
+	push $s2
+	push $s3
+	
+	li $s0,0
+Loop:
+	# do the actual loop logic
+	add $s1,%prow,$s0 # row
+	add $s2,$zero,%pcol # col
+	getPixel $s1,$s2,$s3 # store pixel col in $s3
+	
+	# good colours
+	beq $s3,WALL_COL,continue
+	beq $s3,%pcolour,continue
+	
+	# bad colours
+	li $t2,0
+	
+	
+continue:	
+	#
+	inc $s0
+	ble $s0,3,Loop
+	
+	pop $s3
+	pop $s2
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro good_portal_loc_ceiling(%prow, %pcol, %pcolour)
+	push $s0
+	push $s1
+	push $s2
+	push $s3
+	
+	li $s0,0
+Loop:
+	# do the actual loop logic
+	add $s1,$zero,%prow # row
+	add $s2,%pcol,$s0 # col
+	getPixel $s1,$s2,$s3 # store pixel col in $s3
+	
+	# good colours
+	beq $s3,WALL_COL,continue
+	beq $s3,%pcolour,continue
+	
+	# bad colours
+	li $t2,0
+	
+	
+continue:	
+	#
+	inc $s0
+	ble $s0,3,Loop
+	
+	pop $s3
+	pop $s2
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro get_pcol(%dest,%col)
+	push $s0
+	li $s0,%col
+	beq $s0,0,blue
+	beq $s0,1,orange
+blue:
+	lw %dest,PORTAL_COLS+0
+	j done
+orange:
+	lw %dest,PORTAL_COLS+4
+	j done
+done:
+	pop $s0
+.end_macro
+
+# get/set portal loc
+.macro get_portal_loc(%row,%col,%ptype)
+	push $s7
+	add $s7,$zero,%ptype
+	beq $s7,0,blue
+	beq $s7,1,orange
+	break
+blue:
+	lw %row,portal_locs+0
+	lw %col,portal_locs+4
+	j done
+orange:
+	lw %row,portal_locs+8
+	lw %col,portal_locs+12
+	j done
+done:
+	pop $s7
+.end_macro
+
+.macro set_portal_loc(%row,%col,%ptype)
+	push $s0
+	li $s0,%ptype
+	beq $s0,0,blue
+	beq $s0,1,orange
+	break
+blue:
+	sw %row,portal_locs+0
+	sw %col,portal_locs+4
+	j done
+orange:
+	sw %row,portal_locs+8
+	sw %col,portal_locs+12
+	j done
+done:
+	pop $s0
+.end_macro
+
+# get/set portal dir
+.macro get_portal_dir(%dest,%ptype)	
+	lb %dest,portal_dir(%ptype)
+.end_macro
+.macro set_portal_dir(%dest,%ptype)	
+	sb %dest,portal_dir+%ptype
+.end_macro
+
+# check if we have a portal to our left/right
+.macro check_portals
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	push $t5
+
+	# use of vars
+	# $t0 - row
+	# $t1 - col
+	# $t2 - cntr
+	# $t3 - colour
+	# $t4 - where_portal
+	# $t5 - where_portal_type
+	
+	li $t4,-1
+	li $t5,0
+	
+	move $t0,player_row
+	move $t1,player_col
+	
+	beq player_col 0,checkRight
+	
+checkLeft:
+	dec $t1
+	
+	# for loop
+	li $t2 0
+for1:
+	# logic
+	add $t0,$t0,$t2
+	getPixel $t0,$t1,$t3
+	sub $t0,$t0,$t2
+	
+	beq $t3,BP_COL,isBlue1
+	beq $t3,OP_COL,isOrange1
+	j continue1
+
+isBlue1:
+	li $t4,0
+	li $t5,0
+	
+	j continue1
+	
+
+isOrange1:
+	li $t4,0
+	li $t5,1
+
+	j continue1
+	
+continue1:
+	
+	#
+	
+	inc $t2
+	ble $t2,3,for1
+	
+	
+	# fix $t1
+	inc $t1
+	
+
+	
+checkRight:
+	beq player_col 63,done
+	add $t1,$t1,3
+	
+	# for loop
+	li $t2 0
+for2:
+	# logic
+	add $t0,$t0,$t2
+	getPixel $t0,$t1,$t3
+	sub $t0,$t0,$t2
+	
+	beq $t3,BP_COL,isBlue2
+	beq $t3,OP_COL,isOrange2
+	j continue2
+
+isBlue2:
+	li $t4,1
+	li $t5,0
+	
+	j continue2
+	
+
+isOrange2:
+	li $t4,1
+	li $t5,1
+
+	j continue2
+	
+continue2:
+	
+	#
+	
+	inc $t2
+	ble $t2,3,for2
+	
+	
+	
+done:
+	# set the values
+	sw $t4,where_portal
+	sw $t5,where_portal_type
+	
+
+	pop $t5
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+	
+.end_macro
+
+
+# passing
+.macro pass_through_portal
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	push $t5
+	push $t6
+	push $t7
+
+	# use of reg
+	# $t0 - pthrough
+	# $t1 - portal_dir[pthrough]
+	# $t2 - portal_dir[where_portal_type]
+	# $t3 - new_row
+	# $t4 - new_col
+	
+	lw $t0,where_portal_type
+	get_portal_dir $t2,$t0
+	
+	mul $t0,$t0,-1
+	inc $t0
+	get_portal_dir $t1,$t0
+	
+	# FIND THE NEW POSITION OF THE PLAYER
+	beq $t1,0,portalShotFromLeft
+	beq $t1,1,portalShotFromRight
+	beq $t1,2,portalCeiling
+	break
+
+portalShotFromLeft:
+	get_portal_loc $t3,$t4,$t0
+	inc $t4
+
+	j carryOn
+
+portalShotFromRight:
+	get_portal_loc $t3,$t4,$t0
+	sub $t4,$t4,3
+
+	j carryOn
+
+portalCeiling:
+	get_portal_loc $t3,$t4,$t0
+	inc $t3
+	
+	j carryOn
+	
+	
+carryOn:
+	# check if it's a safe location to go
+	# use
+	# i = $t5
+	# j = $t6
+	li $t5,0
+outerLoop:
+	# outer loop logic
+	li $t6,0
+innerLoop:	
+	# inner loop logic
+	add $t3,$t3,$t5
+	add $t4,$t4,$t6
+	
+	# get colour
+	getPixel($t3,$t4,$t7)
+		
+	sub $t3,$t3,$t5
+	sub $t4,$t4,$t6
+	
+	# analyze it
+	beq $t7,BOX_COL,cont
+	beq $t7,BG_COL,cont
+	j abort
+	
+cont:	
+	#
+	inc $t6
+	ble $t6,2,innerLoop
+	
+	
+	#
+	inc $t5
+	ble $t5,3,outerLoop
+	
+	
+	# move the player to their new location
+	move player_row,$t3
+	move player_col,$t4
+	
+	# decreaseScore
+	decrease_score
+	
+abort:	
+	pop $t7
+	pop $t6
+	pop $t5
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+	
+.end_macro
+
+# check if we're on a button
+.macro check_button
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	push $t4
+	
+	# use
+	# $t0 - player_button
+	# $t1 - button_pixels
+	# $t2 - checking row
+	# $t3 - for loop iterator
+	# $t4 - object
+	
+	# defaults
+	li $t0,0
+	li $t1,0
+	
+	add $t2,player_row,4
+	bge $t2,64,ret
+	
+	# for loop
+	li $t3,0
+startLoop:
+	# loop logic
+	# get the real column we need
+	add $t3,$t3,player_col
+	getObj($t2,$t3,$t4)
+	sub $t3,$t3,player_col
+	
+	blt $t4,4,cont
+	bge $t4,8,cont
+	
+	# on a button!
+	move $t0,$t4
+	inc $t1
+	
+cont:	
+	#
+	inc $t3
+	ble $t3,2,startLoop
+	
+ret:	
+	# save the values	
+	sw $t0,player_button
+	sw $t1,button_pixels
+
+	pop $t4
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+# draw door
+.macro draw_door(%col)
+	# use the button that the player is currently on to determine
+	push $s0
+	push $s1
+	
+	# use
+	# $s0 - obj #
+	# $s1 - loc
+	
+	# find the object
+	lw $s0,player_button
+	sub $s0,$s0,4
+	
+	getObjLoc($s0,$s1)
+	
+	# draw
+	pixelRm($s1,%col)
+	add $s1,$s1,64
+	pixelRm($s1,%col)
+	add $s1,$s1,64
+	pixelRm($s1,%col)
+	add $s1,$s1,64
+	pixelRm($s1,%col)
+	
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro interact_button
+	push $t0
+	push $t1
+	push $t2
+	
+	# use
+	# $t0 - player_button
+	# $t1 - ac
+	# $t2 - player_boxes
+	
+	lb $t2,player_boxes
+	
+	lw $t0,player_button
+	beqz $t0,ret # return if player_button==0
+	
+	sub $t0,$t0,4
+	lb $t1,objstate($t0)
+	
+	beqz $t1,notAc
+	j ac
+
+notAc:
+	# we want to activate the btn
+	blez $t2,ret
+	
+	# activate the btn
+	li $t1,1
+	sb $t1,objstate($t0)
+	
+	# delete the wall
+	draw_door(BG_COL)
+	
+	# draw the btn
+	draw_btn(BTN_AC_COL)
+	
+	# take away the cub
+	dec $t2
+	sb $t2,player_boxes
+	
+	j ret
+
+ac:
+	# we want to deactivate the btn
+	
+	# deactivate the btn
+	li $t1,0
+	sb $t1,objstate($t0)
+	
+	# draw the wall
+	draw_door(DOOR_COL)
+	
+	# draw the btn
+	draw_btn(BTN_DE_COL)
+	
+	# give the cube
+	inc $t2
+	sb $t2,player_boxes
+
+	j ret
+
+ret:
+	pop $t2
+	pop $t1
+	pop $t0
+.end_macro
+
+# draw btn
+.macro draw_btn(%col)
+	# use the button that the player is currently on to determine
+	push $s0
+	push $s1
+	
+	# use
+	# $s0 - obj #
+	# $s1 - loc
+	
+	# find the object
+	lw $s0,player_button
+	
+	getObjLoc($s0,$s1)
+	
+	# draw
+	pixelRm($s1,%col)
+	inc $s1
+	pixelRm($s1,%col)
+	inc $s1
+	pixelRm($s1,%col)
+	
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro decrease_score
+	push $s0
+	push $s1
+	
+	lw $s0,cur_score
+	blez $s0,end
+	
+	dec $s0
+	sw $s0,cur_score
+	
+	# decrease visually
+	li $s1,1
+	pixel($s1,$s0,WALL_COL)
+	inc $s1
+	pixel($s1,$s0,WALL_COL)
+	inc $s1
+	pixel($s1,$s0,WALL_COL)
+		
+end:
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro increase_score
+	push $s0
+	push $s1
+	
+	lw $s0,cur_score
+	bge $s0,64,end
+	
+	# increase visually
+	li $s1,1
+	pixel($s1,$s0,SCORE_COL)
+	inc $s1
+	pixel($s1,$s0,SCORE_COL)
+	inc $s1
+	pixel($s1,$s0,SCORE_COL)
+	
+	inc $s0
+	sw $s0,cur_score
+		
+end:
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro game_restart
+	push $t0
+	
+	li $t0,0
+	
+	# window state
+	sb $t0,levels_beat+0
+	sb $t0,levels_beat+1
+	sb $t0,levels_beat+2
+	sb $t0,levels_beat+3
+	
+	sw $t0,curlevel
+	sw $t0,curscreen
+	sw $t0,screendrawn
+	sw $t0,cursor_loc
+	sw $t0,partial_frames
+	
+	pop $t0
+.end_macro
+
+.macro clock
+	li $v0,32
+	li $a0,67
+	syscall
+.end_macro
+
+.macro draw_cursor(%col)
+	push $s0
+	push $s1
+	push $s2
+	push $s3
+	push $s4
+	
+	# use
+	# $s0 - row
+	# $s1 - col
+	# $s2 - up
+	# $s3 - down
+	# $s4 - i
+	
+	# original values
+	li $s1,18
+	lw $s0,cursor_loc
+	mul $s0,$s0,11
+	add $s0,$s0,24
+	
+	# while loop
+startWhile:
+	ble $s1,14,endWhile
+	
+	# while loop logic
+	
+	# calc up
+	add $s2,$s0,$s1
+	add $s2,$s2,-17
+	
+	# calc down
+	sub $s3,$s0,$s1
+	add $s3,$s3,19
+	
+	# do a for loop
+	move $s4,$s2
+fstart:
+	# for logic
+	
+	pixel($s4,$s1,%col)
+	
+	#
+	inc $s4
+	ble $s4,$s3,fstart
+	
+	dec $s1
+	j startWhile
+	#	
+endWhile:	
+	
+	pop $s4
+	pop $s3
+	pop $s2
+	pop $s1
+	pop $s0
+.end_macro
+
+.macro get_next_level(%reg)
+	push $s0
+	# for loop
+	li %reg,1
+logic:
+	# loop logic
+	# get the level
+	lb $s0,levels_beat(%reg)
+	beqz $s0,done
+	
+	#
+	inc %reg
+	ble %reg,3,logic
+
+done:
+	pop $s0
+.end_macro
+###
+
+.data
+# SCREENS
+SELECT_SCREEN:	.ascii "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111000000011111100000011111100011111111110001100000001000000010000110000011000011000001000011100000110000001111000000100000001000001100011000000110000100000110000011000000111100000010000000100000110011000000001100010000011000001100000110010000001000000010000011001100000000110001000001100000110000011001100000100000001000001100110000000011000100001110000011000001000110000010000000100001100011000000001100011111100000001100001100001100001000000011111100001100000000110001000110000000110000110000110000100000001000000000110000000011000100001100000011000111111111000010000000100000000001100000011000010000011000001100011000000110001000000010000000000011000011000001000001100000110001100000011000100000001000000000000111111000000100000011000011001100000000110011111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000022200000000000000002000000200000000000000000000000000000000000000200000000000000000200000020000000000000000000000000000000000000020000002220220020020000002000000000000000000000000000000000000002000022022020220202000000200000000000000000000000000000000000000200002220202022200200000020000000000000000000000000000000000000020000200002002000020000002000000000000000000000000000000000000002222202220200022202000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000222000000000000000020000022000000000000000000000000000000000000002000000000000000002000020020000000000000000000000000000000000000200000022202200200200000002000000000000000000000000000000000000020000220220202202020000000200000000000000000000000000000000000002000022202020222002000000200000000000000000000000000000000000000200002000020020000200000200000000000000000000000000000000000000022222022202000222020000022200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002220000000000000000200000220000000000000000000000000000000000000020000000000000000020000000200000000000000000000000000000000000002000000222022002002000000020000000000000000000000000000000000000200002202202022020200000022000000000000000000000000000000000000020000222020202220020000000200000000000000000000000000000000000002000020000200200002000000020000000000000000000000000000000000000222220222020002220200002222000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000333000000030000000000000000000000000000000000000000000000000000300030000000003000000000000000000000000000000000000000000000000030000333030003330000000000000000000000000000000000000000000000030000030303030030000000000000000000000000000000000000000000000003300003030303003000000000000000000000000000000000000000000000000030003003030300300000000000000000000000000000000000000000000000000300300333330033000000000000000000000000000000000000000000000000003300000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+WIN_SCREEN:	.ascii "4444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444455444445544554444444444444444444444444444444444444444444444444445544444554455444444444444444445544554444444444444444444444444444555444455444444444444444444444554455444444444444444444444444444455454445544554444555544555544455445544444444444444444444444444445544544554455445544444554445445544554444444444444444444444444444554454455445544544444454444544554455444444444444444444444444444455444545544554454444445555555455445544444444444444444444444444445544454554455445444444544444444544454444444444444444444444444444554444555445544544444455444444444444444444444444444444444444444455444445544554455444445544444455445544444444444444444444444444445544444554455444455554445555445544554444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444544444444444444444444445444444444444444444444444444444444444444454444444444444444444444544444444444444444444444444444444444444445444444444444444444444454444444444444444444444444444444444444444544444444444444444444445444444444444444444444444444444444444444454444444444444444444444544444444444444444444444444444444444444445444444444444444444444454444444444444444444444444444444444444444544444444444444444444445444444444444444444444444444444444444444454444444444444444444444544444444444444444444444444444444444444445444444444444444444444454444444444444444444444444444444444444444544444444444444444444445444444444444444444444444444444444444444454444444444444444444444544444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444445444444444444444444444544444444444444444444444444444444444444444544444444444444444444544444444444444444444444444444444444444444454444444444444444444454444444444444444444444444444444444444444445444444444444444444445444444444444444444444444444444444444444444544444444444444444445444444444444444444444444444444444444444444445444444444444444444544444444444444444444444444444444444444444444454444444444444444544444444444444444444444444444444444444444444444554444444444445544444444444444444444444444444444444444444444444444554444444445444444444444444444444444444444444444444444444444444444555555555444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444"
+FAIL_SCREEN:	.ascii "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777755777777777777777777777777777777777777777777755555557777777755775577777777777777777777777777777777777777777775577777777777775577557777777777777777777777777777777777777777777557777777777777777755777777777777777777777777777777777777777777755777775555577755775577777777777777777777777777777777777777777775577777777757775577557777777777777777777777777777777777777777777555555777775577557755777777777777777777777777777777777777777777755777777555557755775577777777777777777777777777777777777777777775577777577755775577557777777777777777777777777777777777777777777557777757775577557755777777777777777777777777777777777777777777755777775777557755775577557755775577777777777777777777777777777775577777755555775577755755775577557777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777577777777777777777777775777777777777777777777777777777777777777757777777777777777777777577777777777777777777777777777777777777775777777777777777777777757777777777777777777777777777777777777777577777777777777777777775777777777777777777777777777777777777777757777777777777777777777577777777777777777777777777777777777777775777777777777777777777757777777777777777777777777777777777777777577777777777777777777775777777777777777777777777777777777777777757777777777777777777777577777777777777777777777777777777777777775777777777777777777777757777777777777777777777777777777777777777577777777777777777777775777777777777777777777777777777777777777757777777777777777777777577777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777755555555577777777777777777777777777777777777777777777777777777757777777775577777777777777777777777777777777777777777777777777557777777777775577777777777777777777777777777777777777777777777577777777777777775777777777777777777777777777777777777777777777577777777777777777757777777777777777777777777777777777777777777757777777777777777777577777777777777777777777777777777777777777757777777777777777777757777777777777777777777777777777777777777775777777777777777777775777777777777777777777777777777777777777777577777777777777777777577777777777777777777777777777777777777777757777777777777777777775777777777777777777777777777777777777777775777777777777777777777577777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777"
+CONGRATS_SCREEN:	.ascii "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666556666656666666666666666666666666666666666666666666666666666666655666665666666666666666666666666666666666655665566556666666666665566666566666666666666666666666666666666665566556655666666666666556666656666556665566656665556666555556666556655665566666666666655666665666665666556665655666566655665566655665566556666666666665566666566666566655665565666655665566656665566556655666666666666556666656666655656566566566666566556665666556655665566666666666655666665666666565655656656666656655666556665666566656666666666665566665566666656566565665666655665566655666666666666666666666666655666566666665656655666556665666556665566556655665566666666666666555566666666656665566666555666655666556655665566556666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666566666666666666666666665666666666666666666666666666666666666666656666666666666666666666566666666666666666666666666666666666666665666666666666666666666656666666666666666666666666666666666666666566666666666666666666665666666666666666666666666666666666666666656666666666666666666666566666666666666666666666666666666666666665666666666666666666666656666666666666666666666666666666666666666566666666666666666666665666666666666666666666666666666666666666656666666666666666666666566666666666666666666666666666666666666665666666666666666666666656666666666666666666666666666666666666666566666666666666666666665666666666666666666666666666666666666666656666666666666666666666566666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666665666666666666666666666566666666666666666666666666666666666666666566666666666666666666566666666666666666666666666666666666666666656666666666666666666656666666666666666666666666666666666666666665666666666666666666665666666666666666666666666666666666666666666566666666666666666665666666666666666666666666666666666666666666665666666666666666666566666666666666666666666666666666666666666666656666666666666666566666666666666666666666666666666666666666666666556666666666665566666666666666666666666666666666666666666666666666556666666665666666666666666666666666666666666666666666666666666666555555555666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666665555556566666666666666566666666656666666666656666666666666666656566566656666666666666556666666665666666666666666666666666666666566656665556556566666565666665656566556556556666566666566666656656665666565665566666566566666556556566565656656655565565666666666666566656566656666656656666656655665556565665665656656566666666666656665656655666666555666665665565665665666566565665566666666666655666565666656666666566666565656555566566656656566555666665665666666666666666666666666666655666666666656666666666566566666666566666666666666666666666666665666666666556666666666655556666666566666666666666666666666666666666666666666666666666666666666666666"
+
+# LEVELS
+LEVELS:	.ascii	"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEBEEEEEEEEEEEEEEBEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEENNNNEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEENNWWEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEENNWWEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEE0FWWEEEBEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEBEEEEEWFWWEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWFWWEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWFWWWWWWWWWWWWWWWWWWEEEEEEEEEEEWWWWWEEEEEEEEEEEWWW4WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEWWWWWEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE0FWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEFWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEFWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEFWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWW4WWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNBEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNNNNNNNNNNNNNNEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNNNNNNNNNNNNNNEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEE2EEEEEE1FNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEWFNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEWFNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEWFNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEWWWWW6WWWWWW5WWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEE0EEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEBEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNNNEEEEEEEEEEEEEEWWWWWWWWWWWWWWWW4WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWNNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEENNEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEBEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEWWWWWWWWWWWWWWWWWWWWWWWEEEWWWEEEWWWEEEWWWEEEWWWEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEWWWEEEWWWEEEWWWEEEWWWEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEWWWEEEWWWEEEWWWEEEWWWEEEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWEEEWWWEEEWWWEEEWWWEEEWWWEEEWWWWWWWWWWWWWWWW"
+newline:	.asciiz "\n
+
+# COLOURS
+.eqv	BG_COL	0xffffff
+.eqv	FINISH_COL	0xeff21b
+
+.eqv	WALL_COL	0x00000
+.eqv	NP_WALL_COL	0x676169
+.eqv	PLAYER_COL	0x00ffff
+.eqv	LOOK_COL	0xff0000
+.eqv	BOX_COL	0x0dba13
+.eqv	BOX_CONSUME_COL	0x0dbb13
+.eqv	DOOR_COL	0x2011ab
+.eqv	BTN_DE_COL	0x4a2f2f
+.eqv	BTN_AC_COL	0x9b14de
+
+.eqv	BP_COL	0x00a2ff
+.eqv	OP_COL	0xff5d00
+
+.eqv	SCORE_COL	0x07e8f0
+COLOURS:	.word 0x676169,0x00a2ff,0xff5d00,0x2011ab,0x058df5,0xffffff,0x0dba13,0xbf0f0f
+PORTAL_COLS:	.word BP_COL, OP_COL
+
+.eqv COL_0	0x676169
+
+# VARS
+.eqv	player_row	$t8
+.eqv	player_col	$t9
+.eqv	player_dir	$s7
+on_floor:	.word 0
+wall_left:	.word 0
+wall_right:	.word 0
+
+portal_locs:	.word	-1,-1,-1,-1 # r,c for each portal
+portal_dir:	.byte	-1,-1 # 0 for left, 1 for right
+player_boxes:	.byte	0
+
+where_portal:	.word -1
+where_portal_type:	.word -1
+
+objbuf:	.space 4096
+objloc:	.word 0,0,0,0,0,0,0,0
+objstate:	.byte 0,0,0,0
+
+player_button:	.word 0
+button_pixels:	.word 0
+
+cur_score:	.word 0
+partial_frames:	.word 0
+
+levels_beat:	.byte 0,0,0,0
+curlevel:	.word 1
+curscreen:	.word 0
+cursor_loc:	.word 0
+screendrawn:	.word 0
+
+# ADDRESSES
+.eqv	KEY	0xffff0000
+
+.text
+.globl main
+main:
+	#init_level
+	#draw_player PLAYER_COL
+	#li $t0,0
+	#li $t1,63
+	#li $t2,0xffffff
+	#pixel $t0, $t1, $t2
+	
+	#displayImage SELECT_SCREEN
+	
+	game_restart
+	
+	# GAME LOOP:
+gameLoop:
+	# determine which screen we're on
+	lw $t0,curscreen
+	bne $t0,-1,screenLogic
+	# we're in a level right now
+	jal play_level
+leveldone:
+	# level complete logic
+	li $t0,0
+	sw $t0,screendrawn
+	sw $t0,partial_frames
+	
+	# did we win?
+	lw $t0,curlevel
+	lb $t0,levels_beat($t0)
+	beq $t0,1,levelbeat
+	beq $t0,0,levelnotbeat
+	break
+levelbeat:
+	li $t0,1
+	sw $t0,curscreen
+	j finishlogic
+levelnotbeat:
+	li $t0,2
+	sw $t0,curscreen
+	j finishlogic
+finishlogic:
+	
+	
+screenLogic:
+	# draw the screen if need be
+	lw $t0,screendrawn
+	beq $t0,1,handleKeys
+	
+	# need to draw a screen!
+	lw $t0,curscreen
+	beq $t0,0,dispSelect
+	beq $t0,1,dispWin
+	beq $t0,2,dispFail
+	beq $t0,3,dispCongrats
+
+dispSelect:
+	displayImage SELECT_SCREEN
+	j finDisp
+
+dispWin:
+	displayImage WIN_SCREEN
+	j finDisp
+
+dispFail:
+	displayImageOffset FAIL_SCREEN
+	j finDisp
+
+dispCongrats:
+	displayImage CONGRATS_SCREEN
+	j finDisp
+
+finDisp:
+	
+	li $t0,1
+	sw $t0,screendrawn
+	
+	
+	
+handleKeys:
+	# was there a new key pressed?
+	lw $t0, KEY
+	beqz $t0,finishhandle
+	
+	la $t0,KEY
+	add $t0,$t0,4
+	lw $t0,0($t0)
+	
+	# check the general keys
+	beq $t0,'q',handleq
+	beq $t0,'r',handler
+	
+	# are we on the menu screen
+	lw $t1,curscreen
+	bne $t1,0,goToNextScreen
+	
+	# draw the cursor
+	draw_cursor(COL_0)
+	
+	# check the keys specific to the menu screen
+	beq $t0,'w',handle.
+	beq $t0,'s',handlee
+	beq $t0,'d',handleu
+	
+	j finishhandle
+
+handleq:
+	quit
+
+handler:
+	game_restart
+	j finishhandle
+
+handle.:
+	# up
+	lw $t1,cursor_loc
+	beq $t1,0,finishhandle
+	dec $t1
+	sw $t1,cursor_loc
+
+	j finishhandle
+	
+handlee:
+	# down
+	lw $t1,cursor_loc
+	beq $t1,3,finishhandle
+	inc $t1
+	sw $t1,cursor_loc
+
+	j finishhandle
+	
+handleu:
+	# right
+	lw $t1,cursor_loc
+	beq $t1,3,handleuquit
+	j handleulevel
+
+handleuquit:
+	quit
+
+handleulevel:
+	# set curlevel and curscreen
+	inc $t1
+	sw $t1,curlevel
+	li $t1,-1
+	sw $t1,curscreen
+	
+	j finishhandle
+
+finishhandle:
+
+	# are we on the menu screen
+	lw $t1,curscreen
+	bne $t1,0,finishScreens
+	draw_cursor(BTN_AC_COL)
+
+finishScreens:
+	
+	
+goToNextScreen:
+	# go to the next screen
+	# get cur screen
+	lw $t0,curscreen
+	beq $t0,1,curscreen1
+	beq $t0,2,curscreen2
+	j updates
+	
+curscreen1:
+	# increase partial frames
+	lw $t0,partial_frames
+	inc $t0
+	sw $t0,partial_frames
+	
+	blt $t0,20,updates
+	# now it's >=20
+	
+	li $t0,-1
+	sw $t0,curscreen
+	
+	# find the next lvl
+	get_next_level $t0
+	sw $t0,curlevel
+	
+	# is curlevel == 4?
+	lw $t0,curlevel
+	bne $t0,4,updates
+	# now it's 4
+	
+	li $t0,3
+	sw $t0,curscreen
+	
+	li $t0,0
+	sw $t0,screendrawn
+	
+
+	j updates
+curscreen2:
+	# increase partial frames
+	lw $t0,partial_frames
+	inc $t0
+	sw $t0,partial_frames
+	
+	blt $t0,20,updates
+	# now it's >=20
+	li $t0,-1
+	sw $t0,curscreen
+
+	j updates
+	
+
+updates:	
+	clock
+	
+	j gameLoop
+	#
+	
+	quit
+
+play_level:
+	init_level
+	
+	# while true
+loop_start:
+	# increase the partial_frames
+	lw $s0,partial_frames
+	inc $s0
+	sw $s0,partial_frames
+
+	# clear the old player
+	draw_player BG_COL
+	
+	# check for walls
+	jal check_wall_left
+	jal check_wall_right
+	
+	# check for portals
+	check_portals
+	
+	# check for buttons
+	check_button
+
+	# get keys
+	lw $t0, KEY
+	
+	beqz $t0,finishKeyLogic
+	# key logic:::
+	# get key
+	la $t0,KEY
+	add $t0,$t0,4
+	lw $t0,0($t0)
+	beq $t0,'a',keyo
+	beq $t0,'d',keyu
+	beq $t0,'j',keyh
+	beq $t0,'l',keyn
+	beq $t0,'w',key.
+	beq $t0,'k',keyt
+	beq $t0,'q',keyq
+	beq $t0,'r',keyr
+	beq $t0,'m',keym
+	j finishKeyLogic
+	
+keyo:	
+	# change our direction
+	li player_dir 0
+	
+	# pass through portal
+	lw $t0,where_portal
+	bne $t0,0,keyocont
+	pass_through_portal
+	
+keyocont:
+	# check if we have a wall to our left
+	lw $t0,wall_left
+	beq $t0,1,finishKeyLogic
+	dec player_col
+	j finishKeyLogic
+
+keyu:	
+	# change our direction
+	li player_dir 1
+	
+	# pass through portal
+	lw $t0,where_portal
+	bne $t0,1,keyucont
+	pass_through_portal
+	
+keyucont:
+	
+	# check if we have a wall to our right
+	lw $t0,wall_right
+	beq $t0,1,finishKeyLogic
+	inc player_col
+	j finishKeyLogic
+
+key.:
+	li player_dir,2
+	j finishKeyLogic
+
+keyh:
+	# shoot a blue portal
+	portal_shot 0
+	j finishKeyLogic
+
+keyn:
+	# shoot an orange portal
+	portal_shot 1
+	j finishKeyLogic
+
+keyt:
+	interact_button
+	j finishKeyLogic
+
+keyq:
+	quit
+
+keyr:
+	game_restart
+	j gameLoop
+
+keym:
+	j play_level
+	
+	
+finishKeyLogic:
+	check_on_floor
+	
+	# check if we can move down
+	beq player_row,60,leveldone
+	
+	# move down!
+	lw $t0,on_floor
+	beq $t0,1 if1
+	inc player_row
+
+if1:
+
+	# make updates to the graphics
+	draw_player PLAYER_COL
+	
+	# decide if we should exit out
+	lw $t0,curlevel
+	lb $t0,levels_beat($t0)
+	beq $t0,1,leveldone # return
+	
+	
+	# update the score
+	lw $s0,partial_frames
+	blt $s0,25,btnlogic
+	
+	li $s0,0,
+	sw $s0,partial_frames
+	
+	# do something if we get to 0 score
+	lw $s0,cur_score
+	beqz $s0,leveldone
+	
+	decrease_score
+
+btnlogic:	
+	# are we fully on a button?
+	lw $t0,player_button
+	beqz $t0,wait
+	lw $t0,button_pixels
+	beq $t0,3,fullBtn
+	
+	# if the current object state is 0, notFullBtn
+	lw $t1,player_button
+	sub $t1,$t1,4
+	lb $t1,objstate($t1)
+	beqz $t1,notFullBtn
+	j wait
+	
+	
+fullBtn:
+	draw_door(BG_COL)
+	
+	j wait
+
+notFullBtn:
+	draw_door(DOOR_COL)
+
+	j wait	
+
+		
+wait:	# wait!
+	clock
+	
+	j loop_start
+	
+
+# Player collision
+check_wall_left:
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	li $t3,0
+	
+	# default value
+	li $t0,0
+	
+	bne player_col, 0, wl_logic1
+	li $t0,1
+	sw $t0,wall_left
+	jr $ra
+	
+wl_logic1:
+	# check to our left
+	dec player_col
+	
+	add $t1,$zero,0
+forLogic1:
+	
+	add $t1,$t1,player_row
+	
+	# check the pixel
+	getPixel $t1,player_col,$t2
+	
+	# compare the pixel
+	is_this_wall $t2, $t0
+	or $t3,$t3,$t0
+	
+	sub $t1,$t1,player_row
+	
+	inc $t1
+	ble $t1,3,forLogic1
+	
+	inc player_col
+	
+	# save the result
+	sw $t3, wall_left
+		
+	pop $t2
+	pop $t1
+	pop $t0
+	jr $ra
+
+check_wall_right:
+	push $t0
+	push $t1
+	push $t2
+	push $t3
+	li $t3,0
+	
+	# default value
+	li $t0,0
+	
+	bne player_col, 61, wl_logic2
+	li $t0,1
+	sw $t0,wall_right
+	jr $ra
+	
+wl_logic2:
+	# check to our right
+	add player_col,player_col,3
+	
+	add $t1,$zero,0
+forLogic2:
+	
+	add $t1,$t1,player_row
+	
+	# check the pixel
+	getPixel $t1,player_col,$t2
+	
+	# compare the pixel
+	is_this_wall $t2, $t0
+	or $t3,$t3,$t0
+	
+	sub $t1,$t1,player_row
+	
+	inc $t1
+	ble $t1,3,forLogic2
+	
+	sub player_col,player_col,3
+	
+	# save the result
+	sw $t3, wall_right
+	
+	pop $t3
+	pop $t2
+	pop $t1
+	pop $t0
+	jr $ra
