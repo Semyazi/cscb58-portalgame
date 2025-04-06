@@ -24,6 +24,7 @@
 # # Are you OK with us sharing the video with people outside course staff? yes, and please share this project github link as well!
 # # Any additional information that the TA needs to know
 # - I used MARS macros extensively instead of functions since I found them to be more efficient
+# - You'll notice you can't shoot portals on the grey walls, this is an intended gameplay element I forgot to talk about in the video.
 #
 #####################################################################
 
@@ -1201,7 +1202,7 @@ done:
 	beq $t1,0,portalShotFromLeft
 	beq $t1,1,portalShotFromRight
 	beq $t1,2,portalCeiling
-	break
+	j abort
 
 portalShotFromLeft:
 	get_portal_loc $t3,$t4,$t0
