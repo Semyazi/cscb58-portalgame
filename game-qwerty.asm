@@ -25,6 +25,7 @@
 # # Any additional information that the TA needs to know
 # - I used MARS macros extensively instead of functions since I found them to be more efficient
 # - You'll notice you can't shoot portals on the grey walls, this is an intended gameplay element I forgot to talk about in the video.
+# - You can shoot orange ceiling portals and go through the blue portal to come out of the ceiling as well, I just never did this in the video because I'm not used to doing it that way.
 #
 #####################################################################
 
